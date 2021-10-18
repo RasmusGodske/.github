@@ -17,13 +17,17 @@ description: 'Terraform Apply'
 inputs:
   PROJECT_NAME:
     required: true
-  ORGANISATION_NAME:
+  SERVICE_NAME:
+    required: true
+  ENVIRONMENT_INSTANCE:
     required: true
   ENVIRONMENT_SHORT:
     required: true
   TERRAFORM_BACKEND_FILE_PATH:
     required: true
   TERRAFORM_WORKING_DIR_PATH:
+    required: true
+  TERRAFORM_STATE_RG_NAME:
     required: true
   AZURE_TENANT_ID:
     required: true
@@ -46,22 +50,27 @@ runs:
     - name: Checkout code
       uses: actions/checkout@master
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v1.2.1
-      with:
-        terraform_wrapper: false
-        terraform_version: ${{ inputs.TERRAFORM_VERSION }}
-
     - name: Set Environment Secrets
       shell: bash
-      run: |  
-        echo "TERRAFORM_STORAGE_NAME=tfstate${{ inputs.PROJECT_NAME }}${{ inputs.ENVIRONMENT_SHORT }}" >> $GITHUB_ENV
-        echo "TERRAFORM_STATE_RESOURCE_GROUP_NAME=rg-${{ inputs.ORGANISATION_NAME }}-TerraformState-${{ inputs.ENVIRONMENT_SHORT }}" >> $GITHUB_ENV
+      run: |
+        echo "TERRAFORM_STORAGE_NAME=tfstate${{ inputs.PROJECT_NAME }}${{ inputs.ENVIRONMENT_SHORT }}${{ inputs.ENVIRONMENT_INSTANCE }}" >> $GITHUB_ENV
         echo "ARM_TENANT_ID=${{ inputs.AZURE_TENANT_ID }}" >> $GITHUB_ENV
         echo "ARM_CLIENT_ID=${{ inputs.AZURE_SPN_ID }}" >> $GITHUB_ENV
         echo "ARM_CLIENT_OBJECT_ID=${{ inputs.AZURE_SPN_OBJECT_ID }}" >> $GITHUB_ENV
         echo "ARM_CLIENT_SECRET=${{ inputs.AZURE_SPN_SECRET }}" >> $GITHUB_ENV
         echo "ARM_SUBSCRIPTION_ID=${{ inputs.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+        echo "TF_VAR_environment_short=${{ inputs.ENVIRONMENT_SHORT }}" >> $GITHUB_ENV
+        echo "TF_VAR_environment_instance=${{ inputs.ENVIRONMENT_INSTANCE }}" >> $GITHUB_ENV
+        echo "TF_VAR_service_name=${{ inputs.SERVICE_NAME }}" >> $GITHUB_ENV
+        echo "TF_VAR_project_name=${{ inputs.PROJECT_NAME }}" >> $GITHUB_ENV
+        echo "TF_VAR_resource_group_name=${{ inputs.AZURE_RG_NAME }}" >> $GITHUB_ENV
+        echo "TF_VAR_subscription_id=${{ inputs.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v1.2.1
+      with:
+        terraform_wrapper: false
+        terraform_version: ${{ inputs.TERRAFORM_VERSION }}
 
     - name: Azure CLI Install
       shell: bash
@@ -82,9 +91,9 @@ runs:
     - name: Find or create Terraform state resource group
       shell: bash
       run: |
-        if [ $(az group exists --name ${{ env.TERRAFORM_STATE_RESOURCE_GROUP_NAME }} --subscription "${{ inputs.AZURE_SUBSCRIPTION_ID }}") = false ]; then
+        if [ $(az group exists --name ${{ inputs.TERRAFORM_STATE_RG_NAME }} --subscription "${{ inputs.AZURE_SUBSCRIPTION_ID }}") = false ]; then
           echo "Resource group does not exist, creating new";
-          az group create --name ${{ env.TERRAFORM_STATE_RESOURCE_GROUP_NAME }} --location westeurope --subscription "${{ inputs.AZURE_SUBSCRIPTION_ID }}"
+          az group create --name ${{ inputs.TERRAFORM_STATE_RG_NAME }} --location westeurope --subscription "${{ inputs.AZURE_SUBSCRIPTION_ID }}"
         fi
     
     - name: Find or create Terraform state storage account
@@ -95,33 +104,22 @@ runs:
           echo "Storage exists";
           exit;
         fi
-        az storage account create --resource-group ${{ env.TERRAFORM_STATE_RESOURCE_GROUP_NAME }} --name ${{ env.TERRAFORM_STORAGE_NAME }} --sku Standard_LRS --encryption-services blob --min-tls-version TLS1_2
-        account_key=$(az storage account keys list --resource-group ${{ env.TERRAFORM_STATE_RESOURCE_GROUP_NAME }} --account-name ${{ env.TERRAFORM_STORAGE_NAME }} --query '[0].value' -o tsv)
+        az storage account create --resource-group ${{ inputs.TERRAFORM_STATE_RG_NAME }} --name ${{ env.TERRAFORM_STORAGE_NAME }} --sku Standard_LRS --encryption-services blob --min-tls-version TLS1_2
+        account_key=$(az storage account keys list --resource-group ${{ inputs.TERRAFORM_STATE_RG_NAME }} --account-name ${{ env.TERRAFORM_STORAGE_NAME }} --query '[0].value' -o tsv)
         az storage container create --name tfstate --account-name ${{ env.TERRAFORM_STORAGE_NAME }} --account-key $account_key
-
-    # Try not to reference TF_VAR variables in pipeline yml files, only values should be set and they should be read in terraform only
-    # rather create duplicate ENV pipeline vatiable if needed to separate concerns
-    - name: Set TF Vars
-      shell: bash
-      run: |
-        echo "TF_VAR_environment=${{ inputs.ENVIRONMENT_SHORT }}" >> $GITHUB_ENV
-        echo "TF_VAR_organisation=${{ inputs.ORGANISATION_NAME }}" >> $GITHUB_ENV
-        echo "TF_VAR_project=${{ inputs.PROJECT_NAME }}" >> $GITHUB_ENV
-        echo "TF_VAR_resource_group_name=${{ inputs.AZURE_RG_NAME }}" >> $GITHUB_ENV
-        echo "TF_VAR_subscription_id=${{ inputs.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
-    
+  
     # Override/overwrite with environment specific infrastructure
     - name: Configure environment specific infrastructure
       shell: bash
       working-directory: ${{ inputs.TERRAFORM_WORKING_DIR_PATH }}
       run: |
-        cp -fR ../env/${{ inputs.ENVIRONMENT_SHORT }}/* ./ 2>/dev/null || :
+        cp -fR ../env/${{ inputs.ENVIRONMENT_SHORT }}-${{ inputs.ENVIRONMENT_INSTANCE }}/* ./ 2>/dev/null || :
     
     - name: Configure Terraform Backend
       shell: bash
       run: |
         sed -i 's/@storage_account_name/${{ env.TERRAFORM_STORAGE_NAME }}/' ${{ inputs.TERRAFORM_BACKEND_FILE_PATH }}
-        sed -i 's/@resource_group_name/${{ env.TERRAFORM_STATE_RESOURCE_GROUP_NAME }}/' ${{ inputs.TERRAFORM_BACKEND_FILE_PATH }}
+        sed -i 's/@resource_group_name/${{ inputs.TERRAFORM_STATE_RG_NAME }}/' ${{ inputs.TERRAFORM_BACKEND_FILE_PATH }}
 
     - name: Terraform Init
       shell: bash
