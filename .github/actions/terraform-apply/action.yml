@@ -17,17 +17,21 @@ description: 'Terraform Apply'
 inputs:
   PROJECT_NAME:
     required: true
-  SERVICE_NAME:
+  PRODUCT_NAME:
     required: true
   ENVIRONMENT_INSTANCE:
     required: true
   ENVIRONMENT_SHORT:
     required: true
+  TERRAFORM_VERSION:
+    required: true
   TERRAFORM_BACKEND_FILE_PATH:
     required: true
+    default: './infrastructure/main/backend.tf'
   TERRAFORM_WORKING_DIR_PATH:
     required: true
-  TERRAFORM_STATE_RG_NAME:
+    default: './infrastructure/main'
+  AZURE_TF_STATE_RG_NAME:
     required: true
   AZURE_TENANT_ID:
     required: true
@@ -41,14 +45,16 @@ inputs:
     required: true
   AZURE_RG_NAME:
     required: true
-  TERRAFORM_VERSION:
-    required: true
 
 runs:
   using: composite
   steps:
-    - name: Checkout code
-      uses: actions/checkout@master
+    - name: Download artifact
+      uses: actions/download-artifact@v2
+
+    - name: Move files to workspace
+      shell: bash
+      run: mv ${{ github.workspace }}/artifact/* ${{ github.workspace }}
 
     - name: Set Environment Secrets
       shell: bash
@@ -61,7 +67,7 @@ runs:
         echo "ARM_SUBSCRIPTION_ID=${{ inputs.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
         echo "TF_VAR_environment_short=${{ inputs.ENVIRONMENT_SHORT }}" >> $GITHUB_ENV
         echo "TF_VAR_environment_instance=${{ inputs.ENVIRONMENT_INSTANCE }}" >> $GITHUB_ENV
-        echo "TF_VAR_service_name=${{ inputs.SERVICE_NAME }}" >> $GITHUB_ENV
+        echo "TF_VAR_product_name=${{ inputs.PRODUCT_NAME }}" >> $GITHUB_ENV
         echo "TF_VAR_project_name=${{ inputs.PROJECT_NAME }}" >> $GITHUB_ENV
         echo "TF_VAR_resource_group_name=${{ inputs.AZURE_RG_NAME }}" >> $GITHUB_ENV
         echo "TF_VAR_subscription_id=${{ inputs.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
@@ -81,19 +87,13 @@ runs:
       run: |
         az login --service-principal --username "${{ inputs.AZURE_SPN_ID }}" --password "${{ inputs.AZURE_SPN_SECRET }}" --tenant "${{ inputs.AZURE_TENANT_ID }}"
         az account set --subscription "${{ inputs.AZURE_SUBSCRIPTION_ID }}"
-
-    - name: Setup Authorization to pull TF modules
-      shell: bash
-      run: |
-        git config --local --remove-section http."https://github.com/"
-        git config --global url."https://foo:bar@github.com/Energinet-DataHub/geh-terraform-modules".insteadOf "https://github.com/Energinet-DataHub/geh-terraform-modules"
     
     - name: Find or create Terraform state resource group
       shell: bash
       run: |
-        if [ $(az group exists --name ${{ inputs.TERRAFORM_STATE_RG_NAME }} --subscription "${{ inputs.AZURE_SUBSCRIPTION_ID }}") = false ]; then
+        if [ $(az group exists --name ${{ inputs.AZURE_TF_STATE_RG_NAME }} --subscription "${{ inputs.AZURE_SUBSCRIPTION_ID }}") = false ]; then
           echo "Resource group does not exist, creating new";
-          az group create --name ${{ inputs.TERRAFORM_STATE_RG_NAME }} --location westeurope --subscription "${{ inputs.AZURE_SUBSCRIPTION_ID }}"
+          az group create --name ${{ inputs.AZURE_TF_STATE_RG_NAME }} --location westeurope --subscription "${{ inputs.AZURE_SUBSCRIPTION_ID }}"
         fi
     
     - name: Find or create Terraform state storage account
@@ -104,8 +104,8 @@ runs:
           echo "Storage exists";
           exit;
         fi
-        az storage account create --resource-group ${{ inputs.TERRAFORM_STATE_RG_NAME }} --name ${{ env.TERRAFORM_STORAGE_NAME }} --sku Standard_LRS --encryption-services blob --min-tls-version TLS1_2
-        account_key=$(az storage account keys list --resource-group ${{ inputs.TERRAFORM_STATE_RG_NAME }} --account-name ${{ env.TERRAFORM_STORAGE_NAME }} --query '[0].value' -o tsv)
+        az storage account create --resource-group ${{ inputs.AZURE_TF_STATE_RG_NAME }} --name ${{ env.TERRAFORM_STORAGE_NAME }} --sku Standard_LRS --encryption-services blob --min-tls-version TLS1_2
+        account_key=$(az storage account keys list --resource-group ${{ inputs.AZURE_TF_STATE_RG_NAME }} --account-name ${{ env.TERRAFORM_STORAGE_NAME }} --query '[0].value' -o tsv)
         az storage container create --name tfstate --account-name ${{ env.TERRAFORM_STORAGE_NAME }} --account-key $account_key
   
     # Override/overwrite with environment specific infrastructure
@@ -119,7 +119,7 @@ runs:
       shell: bash
       run: |
         sed -i 's/@storage_account_name/${{ env.TERRAFORM_STORAGE_NAME }}/' ${{ inputs.TERRAFORM_BACKEND_FILE_PATH }}
-        sed -i 's/@resource_group_name/${{ inputs.TERRAFORM_STATE_RG_NAME }}/' ${{ inputs.TERRAFORM_BACKEND_FILE_PATH }}
+        sed -i 's/@resource_group_name/${{ inputs.AZURE_TF_STATE_RG_NAME }}/' ${{ inputs.TERRAFORM_BACKEND_FILE_PATH }}
 
     - name: Terraform Init
       shell: bash
